@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>My Shelves</title>
+<meta name="description" content="A catalogue of the physical books you own.">
+<meta name="theme-color" content="#1f5f8b">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="My Shelves">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div>
+      <h1>My Shelves</h1>
+      <div class="stats" id="stats"></div>
+    </div>
+    <div class="hdr-actions">
+      <button class="btn scan" id="scanBtn" type="button">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7V4h3M18 4h3v3M21 17v3h-3M6 20H3v-3"></path><path d="M7 8v8M10 8v8M12.5 8v8M15 8v8M17 8v8"></path></svg>
+        Scan barcode
+      </button>
+      <button class="btn primary" id="addBtn" type="button">+ Add a book</button>
+    </div>
+  </header>
+
+  <div class="toolbar">
+    <div class="search">
+      <svg viewBox="0 0 24 24" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>
+      <input id="q" type="search" placeholder="Search your books: title, author, ISBN, notes…" aria-label="Search your books">
+    </div>
+    <div class="chips" id="chips" role="group" aria-label="Filter by status"></div>
+    <select class="sel" id="sort" aria-label="Sort by">
+      <option value="author">Author A–Z</option>
+      <option value="title">Title A–Z</option>
+      <option value="added">Recently added</option>
+      <option value="year">Year published</option>
+      <option value="rating">Rating</option>
+    </select>
+    <div class="seg" role="group" aria-label="View">
+      <button id="vShelf" type="button" aria-pressed="true">Shelves</button>
+      <button id="vList" type="button" aria-pressed="false">List</button>
+    </div>
+  </div>
+
+  <div id="notice" class="note" hidden></div>
+  <main id="view"></main>
+
+  <footer class="foot">
+    <p>Your books are saved in this browser on this device. Export a backup now and then, and use Import to move them to another device.</p>
+    <div class="foot-actions">
+      <button class="btn small" id="exportJson" type="button">Export backup (.json)</button>
+      <button class="btn small" id="exportCsv" type="button">Export spreadsheet (.csv)</button>
+      <label class="btn small" for="importInput">Import backup</label>
+      <input type="file" id="importInput" accept=".json,application/json" hidden>
+    </div>
+    <details class="settings">
+      <summary>Google Books key (optional)</summary>
+      <p>Searches use Open Library and Google Books. Google's free shared allowance often runs out, so add your own free key to get its results every time: <a href="https://developers.google.com/books/docs/v1/using#APIKey" target="_blank" rel="noopener">how to get a key</a>.</p>
+      <div class="key-row"><input id="gbKey" type="text" autocomplete="off" spellcheck="false" placeholder="Paste your API key" aria-label="Google Books API key"><button class="btn small" id="gbKeySave" type="button">Save key</button></div>
+    </details>
+    <p class="credit">Book details from <a href="https://openlibrary.org" target="_blank" rel="noopener">Open Library</a> and <a href="https://books.google.com" target="_blank" rel="noopener">Google Books</a>.</p>
+  </footer>
+</div>
+<div id="modalRoot"></div>
+<div id="toast" class="toast" role="status" hidden></div>
+<input type="file" id="photoInput" accept="image/*" capture="environment" hidden>
+
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
