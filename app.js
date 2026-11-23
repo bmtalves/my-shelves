@@ -520,7 +520,13 @@ async function kv(key, value) {
 }
 function renderAutoSave() {
   const box = $("#autosave"); if (!box) return;
-  box.hidden = !autoSave.supported; if (!autoSave.supported) return;
+  if (!autoSave.supported) {
+    // Firefox and Safari can't keep writing to a chosen file, and phones have no synced folders to pick from.
+    box.hidden = isTouchDevice();
+    box.innerHTML = `<span class="lbl">Auto-save backup</span><p>Auto-saving to a file only works in Chrome or Edge on a computer, because this browser doesn't let websites keep writing to a file. Here, use <b>Export backup</b> and save the file into your Proton Drive folder.</p>`;
+    return;
+  }
+  box.hidden = false;
   const name = autoSave.handle ? autoSave.handle.name : "";
   const when = autoSave.last ? new Date(autoSave.last).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
   const msg = {
