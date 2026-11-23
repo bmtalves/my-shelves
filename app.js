@@ -15,7 +15,7 @@ function loadBooks() {
   catch (e) { notice("Your saved books couldn't be read from this browser."); return []; }
 }
 function saveBooks() {
-  try { localStorage.setItem(STORE_KEY, JSON.stringify(state.books)); return true; }
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(state.books)); scheduleBackup(); return true; }
   catch (e) { toast("Couldn't save: this browser's storage is full or blocked."); return false; }
 }
 function newId() { return (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2)); }
@@ -473,18 +473,120 @@ function download(name, text, type) {
   a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
 }
-const today = () => new Date().toISOString().slice(0, 10);
-function exportJson() {
-  if (!state.books.length) return toast("Nothing to export yet");
-  download(`my-shelves-${today()}.json`, JSON.stringify({ app: "my-shelves", version: 1, exportedAt: new Date().toISOString(), books: state.books }, null, 2), "application/json");
+/* On phones and tablets, open the share sheet (Proton Drive, Files, email…) instead of a plain download. */
+const isTouchDevice = () => window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+async function shareOrDownload(name, text, type) {
+  if (isTouchDevice() && navigator.share && navigator.canShare) {
+    // Some share targets only accept common types, so fall back to text/plain with the same file name.
+    for (const t of [type, "text/plain"]) {
+      const file = new File([text], name, { type: t });
+      if (!navigator.canShare({ files: [file] })) continue;
+      try { await navigator.share({ files: [file], title: name }); return "shared"; }
+      catch (e) { if (e && e.name === "AbortError") return "cancelled"; break; }
+    }
+  }
+  download(name, text, type);
+  return "downloaded";
 }
-function exportCsv() {
+const today = () => new Date().toISOString().slice(0, 10);
+const backupText = () => JSON.stringify({ app: "my-shelves", version: 1, exportedAt: new Date().toISOString(), books: state.books }, null, 2);
+async function exportJson() {
+  if (!state.books.length) return toast("Nothing to export yet");
+  const r = await shareOrDownload(`my-shelves-${today()}.json`, backupText(), "application/json");
+  if (r === "downloaded") toast("Backup saved to your downloads");
+}
+async function exportCsv() {
   if (!state.books.length) return toast("Nothing to export yet");
   const cols = ["title", "author", "isbn", "year", "pages", "genre", "publisher", "location", "status", "rating", "lentTo", "notes"];
   const cell = (v) => { let s = String(v ?? ""); if (/^[=+\-@]/.test(s)) s = "'" + s; return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
   const lines = [cols.join(","), ...filtered().map((b) => cols.map((c) => cell(c === "status" ? STATUS[b.status] || b.status : b[c])).join(","))];
-  download(`my-shelves-${today()}.csv`, "﻿" + lines.join("\r\n"), "text/csv");
+  await shareOrDownload(`my-shelves-${today()}.csv`, "﻿" + lines.join("\r\n"), "text/csv");
 }
+
+/* ---------- Auto-save to a backup file (Chrome/Edge on a computer) ----------
+   The chosen file's handle is kept in IndexedDB; after every change the whole library is rewritten to it.
+   Put the file in a synced folder (Proton Drive, OneDrive…) and the cloud copy stays current. */
+const autoSave = { supported: "showSaveFilePicker" in window && window.self === window.top, handle: null, state: "off", last: 0, timer: 0, writing: null };
+function idb() {
+  return new Promise((res, rej) => { const r = indexedDB.open("myshelves", 1); r.onupgradeneeded = () => r.result.createObjectStore("kv"); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+}
+async function kv(key, value) {
+  const db = await idb();
+  return new Promise((res, rej) => {
+    const tx = db.transaction("kv", value === undefined ? "readonly" : "readwrite"); const st = tx.objectStore("kv");
+    const r = value === undefined ? st.get(key) : value === null ? st.delete(key) : st.put(value, key);
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  });
+}
+function renderAutoSave() {
+  const box = $("#autosave"); if (!box) return;
+  box.hidden = !autoSave.supported; if (!autoSave.supported) return;
+  const name = autoSave.handle ? autoSave.handle.name : "";
+  const when = autoSave.last ? new Date(autoSave.last).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+  const msg = {
+    off: "Pick a file inside your Proton Drive folder (or any synced folder) and every change is saved to it automatically.",
+    on: `Saving to <b>${esc(name)}</b>${when ? ` · last saved ${when}` : ""}.`,
+    paused: `Auto-save to <b>${esc(name)}</b> is paused until you allow it again.`,
+    error: `Couldn't write to <b>${esc(name)}</b>. It may have been moved or deleted. Choose the file again.`,
+  }[autoSave.state];
+  const btns = autoSave.state === "off" ? `<button type="button" class="btn small" data-as="pick">Choose backup file…</button>`
+    : autoSave.state === "paused" ? `<button type="button" class="btn small primary" data-as="resume">Resume auto-save</button><button type="button" class="btn small" data-as="stop">Stop</button>`
+    : `<button type="button" class="btn small" data-as="pick">Change file…</button><button type="button" class="btn small" data-as="stop">Stop auto-save</button>`;
+  box.innerHTML = `<span class="lbl">Auto-save backup</span><p class="${autoSave.state === "error" ? "err" : ""}">${msg}</p><div class="foot-actions">${btns}</div>`;
+}
+async function writeBackup() {
+  if (!autoSave.handle || autoSave.state !== "on") return;
+  if (autoSave.writing) { await autoSave.writing; }
+  autoSave.writing = (async () => {
+    try {
+      const w = await autoSave.handle.createWritable();
+      await w.write(backupText()); await w.close();
+      autoSave.last = Date.now();
+    } catch (e) {
+      autoSave.state = e && e.name === "NotAllowedError" ? "paused" : "error";
+    }
+    renderAutoSave();
+  })();
+  await autoSave.writing; autoSave.writing = null;
+}
+function scheduleBackup() { if (autoSave.state !== "on") return; clearTimeout(autoSave.timer); autoSave.timer = setTimeout(writeBackup, 800); }
+async function pickBackupFile() {
+  let handle;
+  try {
+    handle = await window.showSaveFilePicker({ suggestedName: "my-shelves-backup.json", types: [{ description: "My Shelves backup", accept: { "application/json": [".json"] } }] });
+  } catch (e) { if (e && e.name !== "AbortError") toast("Couldn't open the file picker."); return; }
+  autoSave.handle = handle; autoSave.state = "on";
+  try { await kv("backupHandle", handle); } catch (e) {}
+  await writeBackup();
+  if (autoSave.state === "on") toast(`Auto-saving to ${handle.name}`);
+}
+async function resumeAutoSave() {
+  if (!autoSave.handle) return;
+  let p = "denied";
+  try { p = await autoSave.handle.requestPermission({ mode: "readwrite" }); } catch (e) {}
+  if (p === "granted") { autoSave.state = "on"; await writeBackup(); } else { autoSave.state = "paused"; renderAutoSave(); }
+}
+async function stopAutoSave() {
+  autoSave.handle = null; autoSave.state = "off"; autoSave.last = 0; clearTimeout(autoSave.timer);
+  try { await kv("backupHandle", null); } catch (e) {}
+  renderAutoSave(); toast("Auto-save stopped");
+}
+async function initAutoSave() {
+  if (!autoSave.supported) return renderAutoSave();
+  try {
+    const h = await kv("backupHandle");
+    if (h) {
+      autoSave.handle = h;
+      const p = await h.queryPermission({ mode: "readwrite" });
+      autoSave.state = p === "granted" ? "on" : "paused";
+    }
+  } catch (e) {}
+  renderAutoSave();
+}
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-as]"); if (!b) return;
+  ({ pick: pickBackupFile, resume: resumeAutoSave, stop: stopAutoSave }[b.dataset.as] || (() => {}))();
+});
 async function importJson(file) {
   if (!file) return;
   let data;
@@ -545,5 +647,6 @@ window.addEventListener("storage", (e) => { if (e.key === STORE_KEY) { state.boo
 { const v = prefs("view"); if (v === "list" || v === "shelf") state.view = v; const s = prefs("sort"); if (s) { state.sort = s; $("#sort").value = s; } }
 state.books = loadBooks();
 render();
+initAutoSave();
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js").catch(() => {});

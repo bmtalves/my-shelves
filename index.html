@@ -55,13 +55,14 @@
   <main id="view"></main>
 
   <footer class="foot">
-    <p>Your books are saved in this browser on this device. Export a backup now and then, and use Import to move them to another device.</p>
+    <p>Your books are saved in this browser on this device. Export a backup to Proton Drive or another cloud now and then, and use Import to move them to another device. On a phone, Export opens the share menu so you can send it straight to the Proton Drive app.</p>
     <div class="foot-actions">
       <button class="btn small" id="exportJson" type="button">Export backup (.json)</button>
       <button class="btn small" id="exportCsv" type="button">Export spreadsheet (.csv)</button>
       <label class="btn small" for="importInput">Import backup</label>
-      <input type="file" id="importInput" accept=".json,application/json" hidden>
+      <input type="file" id="importInput" accept=".json,application/json,text/plain" hidden>
     </div>
+    <div class="autosave" id="autosave" hidden></div>
     <details class="settings">
       <summary>Google Books key (optional)</summary>
       <p>Searches use Open Library and Google Books. Google's free shared allowance often runs out, so add your own free key to get its results every time: <a href="https://developers.google.com/books/docs/v1/using#APIKey" target="_blank" rel="noopener">how to get a key</a>.</p>

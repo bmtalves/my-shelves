@@ -158,6 +158,9 @@ select.sel { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line
 
 .foot { border-top: 1px solid var(--line); padding-top: 18px; display: grid; gap: 10px; color: var(--muted); font-size: 13px; }
 .foot p { margin: 0; max-width: 65ch; }
+.autosave { display: grid; gap: 6px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); max-width: 640px; }
+.autosave p { margin: 0; }
+.autosave b { color: var(--fg); font-weight: 600; overflow-wrap: anywhere; }
 .settings summary { cursor: pointer; color: var(--fg); }
 .settings p { margin: 8px 0; }
 .key-row { display: flex; gap: 6px; max-width: 480px; }

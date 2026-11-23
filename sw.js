@@ -1,6 +1,6 @@
 // Offline support: keeps the app itself available without a connection.
 // Book lookups (Open Library, Google Books) always go to the network.
-const CACHE = "myshelves-v1";
+const CACHE = "myshelves-v2";
 const SHELL = ["./", "index.html", "styles.css", "app.js", "manifest.webmanifest", "icons/icon.svg", "icons/icon-192.png",
   "https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"];
 
