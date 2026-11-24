@@ -143,6 +143,9 @@ function filtered() {
     added: (a, b) => (b.addedAt || 0) - (a.addedAt || 0),
     year: (a, b) => (Number(a.year) || 9999) - (Number(b.year) || 9999),
     rating: (a, b) => (Number(b.rating) || 0) - (Number(a.rating) || 0),
+    // Books with no page count go last either way.
+    pagesDesc: (a, b) => (Number(b.pages) || -1) - (Number(a.pages) || -1) || a.title.localeCompare(b.title),
+    pagesAsc: (a, b) => (Number(a.pages) || Infinity) - (Number(b.pages) || Infinity) || a.title.localeCompare(b.title),
   }[state.sort] || (() => 0);
   return list.sort(by);
 }
