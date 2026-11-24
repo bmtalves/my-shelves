@@ -137,7 +137,7 @@ function filtered() {
     }
     return [b.title, b.author, b.isbn, b.genre, b.location, b.notes, b.lentTo, b.publisher].some((f) => String(f || "").toLowerCase().includes(q));
   });
-  const by = {
+  const sorts = {
     author: (a, b) => lastName(a.author).localeCompare(lastName(b.author)) || a.title.localeCompare(b.title),
     title: (a, b) => a.title.localeCompare(b.title),
     added: (a, b) => (b.addedAt || 0) - (a.addedAt || 0),
@@ -146,8 +146,8 @@ function filtered() {
     // Books with no page count go last either way.
     pagesDesc: (a, b) => (Number(b.pages) || -1) - (Number(a.pages) || -1) || a.title.localeCompare(b.title),
     pagesAsc: (a, b) => (Number(a.pages) || Infinity) - (Number(b.pages) || Infinity) || a.title.localeCompare(b.title),
-  }[state.sort] || (() => 0);
-  return list.sort(by);
+  };
+  return list.sort(sorts[state.sort] || sorts.author);
 }
 
 function renderStats() {

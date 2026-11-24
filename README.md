@@ -16,6 +16,10 @@ Books are stored in the browser (`localStorage`) on each device. Nothing is sent
 
 Without a key, Google Books' shared free quota is often used up and only Open Library results appear. Add your own free key under **Google Books key** at the bottom of the page.
 
+## Releasing a change
+
+Bump the `?v=` number on `styles.css` and `app.js` in `index.html` (and the same names in `SHELL` in `sw.js`), so phones and browsers load the new files instead of a cached copy.
+
 ## Running it
 
 It's a static site with no build step. Serve the folder over HTTPS (for example GitHub Pages) — the camera only works on `https://` or `localhost`.
