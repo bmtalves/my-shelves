@@ -5,7 +5,7 @@
 const STATUS = { unread: "To read", reading: "Reading", read: "Read" };
 const STORE_KEY = "myshelves.books.v1";
 const FIELDS = ["title", "author", "location", "genre", "status", "year", "pages", "isbn", "publisher", "cover", "lentTo", "notes", "rating"];
-const state = { books: [], q: "", filter: "all", sort: "author", view: "shelf" };
+const state = { books: [], q: "", filter: "all", sort: "author", view: "shelf", expanded: new Set() };
 const $ = (s, root = document) => root.querySelector(s);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -193,16 +193,34 @@ function renderView() {
   const groups = new Map();
   list.forEach((b) => { const k = (b.location || "").trim() || "Unshelved"; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(b); });
   const keys = [...groups.keys()].sort((a, b) => (a === "Unshelved") - (b === "Unshelved") || a.localeCompare(b));
+  // Break each location into planks that fit the screen width, like the shelves of a bookcase.
+  const avail = Math.max(240, (v.clientWidth || window.innerWidth - 32) - 24);
+  const spine = (b) => {
+    const p = Number(b.pages) || 300;
+    const w = Math.round(Math.max(26, Math.min(64, 18 + p / 14)));
+    const h = 150 + (hash(b.title) % 40);
+    const surname = String(b.author || "").split(",")[0].trim().split(/\s+/).pop() || "";
+    return { w, html: `<button type="button" class="spine ${b.status === "reading" ? "reading" : ""} ${b.lentTo ? "lent" : ""}" data-id="${esc(b.id)}" style="width:${w}px;height:${h}px;background:${spineColor(b)}" title="${esc(b.title)}${b.author ? " — " + esc(b.author) : ""}" aria-label="${esc(b.title)}${b.author ? " by " + esc(b.author) : ""}"><span class="band"></span><span class="t">${esc(b.title)}</span><span class="a">${esc(surname)}</span>${b.status === "read" || b.status === "reading" ? `<span class="dot"></span>` : ""}</button>` };
+  };
+  const planks = (bs) => {
+    const rows = [[]]; let used = 0;
+    for (const b of bs) { const s = spine(b); if (used + s.w > avail && rows[rows.length - 1].length) { rows.push([]); used = 0; } rows[rows.length - 1].push(s.html); used += s.w + 3; }
+    return rows;
+  };
+  const MAX_PLANKS = 3;
+  const searching = !!state.q.trim();
   v.innerHTML = `<div class="shelves">${keys.map((k) => {
     const bs = groups.get(k);
+    const rows = planks(bs);
+    // Only fold a shelf away when it would hide at least a whole plank more than one.
+    const open = searching || state.expanded.has(k) || rows.length <= MAX_PLANKS + 1;
+    const shown = open ? rows : rows.slice(0, MAX_PLANKS);
+    const hiddenBooks = rows.slice(shown.length).reduce((n, r) => n + r.length, 0);
     return `<section class="shelf"><h2>${esc(k)} <span class="count">${bs.length} ${bs.length === 1 ? "vol." : "vols."}</span></h2>
-      <div class="rack"><div class="row">${bs.map((b) => {
-        const p = Number(b.pages) || 300;
-        const w = Math.max(26, Math.min(64, 18 + p / 14));
-        const h = 150 + (hash(b.title) % 40);
-        const surname = String(b.author || "").split(",")[0].trim().split(/\s+/).pop() || "";
-        return `<button type="button" class="spine ${b.status === "reading" ? "reading" : ""} ${b.lentTo ? "lent" : ""}" data-id="${esc(b.id)}" style="width:${w}px;height:${h}px;background:${spineColor(b)}" title="${esc(b.title)}${b.author ? " — " + esc(b.author) : ""}" aria-label="${esc(b.title)}${b.author ? " by " + esc(b.author) : ""}"><span class="band"></span><span class="t">${esc(b.title)}</span><span class="a">${esc(surname)}</span>${b.status === "read" || b.status === "reading" ? `<span class="dot"></span>` : ""}</button>`;
-      }).join("")}</div></div></section>`;
+      <div class="rack">${shown.map((r) => `<div class="row">${r.join("")}</div>`).join("")}</div>
+      ${hiddenBooks ? `<button type="button" class="btn small more" data-shelf="${esc(k)}">Show ${hiddenBooks} more on this shelf</button>`
+        : !searching && rows.length > MAX_PLANKS + 1 ? `<button type="button" class="btn small more" data-shelf="${esc(k)}">Show less</button>` : ""}
+    </section>`;
   }).join("")}
   <div class="legend"><span><i style="background:var(--fg)"></i>Read</span><span><i style="background:#f1c75b"></i>Reading now</span><span>Faded spine = lent out</span><span>Spine width follows page count</span></div></div>`;
 }
@@ -624,6 +642,12 @@ document.addEventListener("click", (e) => {
   if (t.dataset.close && (t.tagName === "BUTTON" || e.target === t)) return closeModal();
   if (t.tagName !== "BUTTON") return;
   if (t.dataset.f) { state.filter = t.dataset.f; return render(); }
+  if (t.dataset.shelf !== undefined) {
+    const k = t.dataset.shelf; const wasOpen = state.expanded.has(k);
+    wasOpen ? state.expanded.delete(k) : state.expanded.add(k); renderView();
+    if (wasOpen) { const h = [...document.querySelectorAll(".shelf")].find((s) => s.querySelector("[data-shelf]")?.dataset.shelf === k); h && h.scrollIntoView({ block: "nearest" }); }
+    return;
+  }
   if (t.dataset.r) { const r = $("#rating"); const n = Number(t.dataset.r) === Number(r.dataset.v) ? 0 : Number(t.dataset.r); r.dataset.v = n; r.querySelectorAll("button").forEach((x) => x.classList.toggle("on", Number(x.dataset.r) <= n)); return; }
   const act = t.dataset.act;
   if (act === "add") return showForm();
@@ -647,6 +671,7 @@ $("#q").addEventListener("input", (e) => { state.q = e.target.value; renderView(
 $("#sort").addEventListener("change", (e) => { state.sort = e.target.value; prefs("sort", state.sort); renderView(); });
 $("#vShelf").addEventListener("click", () => { state.view = "shelf"; prefs("view", "shelf"); renderView(); });
 $("#vList").addEventListener("click", () => { state.view = "list"; prefs("view", "list"); renderView(); });
+{ let w = window.innerWidth, t = 0; window.addEventListener("resize", () => { clearTimeout(t); t = setTimeout(() => { if (Math.abs(window.innerWidth - w) > 20 && state.view === "shelf" && !modalOpen()) { w = window.innerWidth; renderView(); } }, 200); }); }
 window.addEventListener("storage", (e) => { if (e.key === STORE_KEY) { state.books = loadBooks(); render(); } });
 
 /* ---------- Start ---------- */

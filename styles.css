@@ -75,8 +75,9 @@ select.sel { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line
 .shelves { display: grid; gap: 30px; }
 .shelf h2 { font-size: 1.05rem; font-weight: 600; display: flex; gap: 10px; align-items: baseline; margin-bottom: 8px; }
 .shelf h2 .count { font-family: var(--f-mono); font-size: 12px; color: var(--muted); font-weight: 400; }
-.rack { overflow-x: auto; padding-bottom: 18px; }
-.row { display: flex; align-items: flex-end; gap: 3px; padding: 14px 12px 0; min-height: 200px; border-bottom: 12px solid var(--wood); position: relative; width: max-content; min-width: 100%; }
+.rack { display: grid; gap: 22px; padding-bottom: 16px; }
+.row { display: flex; align-items: flex-end; gap: 3px; padding: 14px 12px 0; min-height: 200px; border-bottom: 12px solid var(--wood); position: relative; }
+.shelf .more { margin-top: 2px; }
 .row::after { content: ""; position: absolute; left: 0; right: 0; bottom: -16px; height: 4px; background: var(--wood-dark); }
 .spine { border: 0; padding: 10px 0; border-radius: 3px 3px 1px 1px; color: var(--spine-fg); display: flex; flex-direction: column; align-items: center; justify-content: space-between; gap: 8px; box-shadow: inset -3px 0 0 rgba(0,0,0,.18), inset 2px 0 0 rgba(255,255,255,.12); transition: transform .15s ease; position: relative; cursor: pointer; }
 .spine:hover, .spine:focus-visible { transform: translateY(-8px); }
