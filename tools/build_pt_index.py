@@ -129,7 +129,7 @@ def fetch(params, tries=6):
     for attempt in range(tries):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": UA})
-            with urllib.request.urlopen(req, timeout=120) as r:
+            with urllib.request.urlopen(req, timeout=600) as r:
                 return r.read()
         except Exception as e:  # network hiccup or server busy: back off and retry
             wait = min(300, 10 * 2 ** attempt)
@@ -142,62 +142,80 @@ def state_path(s):
     return os.path.join(CACHE, f"{s}.state.json")
 
 
+def windows(since):
+    """Date ranges to ask for, one month each. A failure then only repeats that month, because the
+    library's position markers work once and a lost one means asking for the range again."""
+    today = datetime.now(timezone.utc).date()
+    y, m = (int(since[:4]), int(since[5:7])) if since else (2008, 1)
+    out = [] if since else [(None, "2007-12-31")]
+    while (y, m) <= (today.year, today.month):
+        ny, nm = (y + 1, 1) if m == 12 else (y, m + 1)
+        last = (datetime(ny, nm, 1) - datetime(y, m, 1)).days
+        frm = since if since and (y, m) == (int(since[:4]), int(since[5:7])) else f"{y}-{m:02d}-01"
+        out.append((frm, f"{y}-{m:02d}-{last:02d}"))
+        y, m = ny, nm
+    return out
+
+
 def harvest_set(set_name):
     os.makedirs(CACHE, exist_ok=True)
     st_file = state_path(set_name)
     st = json.load(open(st_file, encoding="utf8")) if os.path.exists(st_file) else {}
+    if "done" not in st:  # first run, or a state file from the old one-long-list version
+        since = (st.get("complete_at") or "")[:10] or None
+        st = {"since": since, "done": [], "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "complete_at": st.get("complete_at")}
+    save = lambda: json.dump(st, open(st_file, "w", encoding="utf8"))
+    save()
     out = os.path.join(CACHE, f"{set_name}.jsonl")
-
-    if st.get("token"):
-        params = {"verb": "ListRecords", "resumptionToken": st["token"]}
-        print(f"[{set_name}] continuing from record {st.get('cursor', '?')}", flush=True)
-    else:
-        params = {"verb": "ListRecords", "metadataPrefix": "oai_dc", "set": set_name}
-        if st.get("complete_at"):
-            params["from"] = st["complete_at"][:10]  # only records new or changed since the last full run
-            print(f"[{set_name}] fetching changes since {params['from']}", flush=True)
-        else:
-            print(f"[{set_name}] starting", flush=True)
-        st["started_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    todo = [w for w in windows(st["since"]) if f"{w[0]}..{w[1]}" not in st["done"]]
+    print(f"[{set_name}] {len(todo)} months to fetch", flush=True)
 
     with open(out, "a", encoding="utf8") as f:
-        while True:
-            body = fetch(params)
-            root = ET.fromstring(body)
-            err = root.find("oai:error", NS)
-            if err is not None:
-                code = err.get("code")
-                if code == "noRecordsMatch":
+        for frm, until in todo:
+            key = f"{frm}..{until}"
+            for attempt in range(5):
+                params = {"verb": "ListRecords", "metadataPrefix": "oai_dc", "set": set_name, "until": until}
+                if frm:
+                    params["from"] = frm
+                ok = True
+                while True:
+                    root = ET.fromstring(fetch(params))
+                    err = root.find("oai:error", NS)
+                    if err is not None:
+                        code = err.get("code")
+                        if code == "noRecordsMatch":
+                            break
+                        if code == "badResumptionToken":  # marker used up by a failed request
+                            print(f"[{set_name}] {key}: lost the library's position marker; fetching this range again", flush=True)
+                            ok = False
+                            break
+                        raise SystemExit(f"OAI error {code}: {err.text}")
+                    lr = root.find("oai:ListRecords", NS)
+                    n = 0
+                    for rec in lr.findall("oai:record", NS):
+                        for isbn, entry in parse_record(rec):
+                            f.write(json.dumps([isbn, entry], ensure_ascii=False) + "\n")
+                            n += 1
+                    f.flush()
+                    tok = lr.find("oai:resumptionToken", NS)
+                    token = (tok.text or "").strip() if tok is not None else ""
+                    where = f"{tok.get('cursor')}/{tok.get('completeListSize')} records read" if tok is not None and tok.get("cursor") else "last page"
+                    print(f"[{set_name}] {key}: {where}, {n} ISBNs from this page", flush=True)
+                    if not token:
+                        break
+                    params = {"verb": "ListRecords", "resumptionToken": token}
+                    time.sleep(PAUSE)
+                if ok:
                     break
-                if code == "badResumptionToken":  # token expired: restart this set from the top
-                    print(f"[{set_name}] the library's position marker expired; restarting this set", flush=True)
-                    st.pop("token", None)
-                    json.dump(st, open(st_file, "w", encoding="utf8"))
-                    return harvest_set(set_name)
-                raise SystemExit(f"OAI error {code}: {err.text}")
-            lr = root.find("oai:ListRecords", NS)
-            n = 0
-            for rec in lr.findall("oai:record", NS):
-                for isbn, entry in parse_record(rec):
-                    f.write(json.dumps([isbn, entry], ensure_ascii=False) + "\n")
-                    n += 1
-            f.flush()
-            tok = lr.find("oai:resumptionToken", NS)
-            token = (tok.text or "").strip() if tok is not None else ""
-            total = tok.get("completeListSize") if tok is not None else "?"
-            cursor = tok.get("cursor") if tok is not None else "?"
-            print(f"[{set_name}] {cursor}/{total} records read, {n} ISBNs from this page", flush=True)
-            if not token:
-                break
-            st["token"], st["cursor"] = token, cursor
-            json.dump(st, open(st_file, "w", encoding="utf8"))
-            params = {"verb": "ListRecords", "resumptionToken": token}
+            else:
+                raise SystemExit("The library's server kept failing. Run the same command again later to continue.")
+            st["done"].append(key)
+            save()
             time.sleep(PAUSE)
 
-    st.pop("token", None)
-    st.pop("cursor", None)
-    st["complete_at"] = st.get("started_at")
-    json.dump(st, open(st_file, "w", encoding="utf8"))
+    st = {"complete_at": st["started_at"]}  # next run only asks for records changed since this one began
+    save()
     print(f"[{set_name}] done", flush=True)
 
 
