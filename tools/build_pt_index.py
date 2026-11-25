@@ -94,7 +94,7 @@ def person(name):
     parts = [p.strip() for p in clean(name).split(",")]
     parts = [p for p in parts if p and not re.fullmatch(r"[\d?\-. ]+|fl\..*|ca\..*", p)]
     if len(parts) >= 2:
-        first = parts[1] + ("." if re.search(r"[A-Z]$", parts[1]) else "")  # "C. R" -> "C. R."
+        first = parts[1] + ("." if re.search(r"(?:^| )[A-Z]$", parts[1]) else "")  # "C. R" -> "C. R."
         return f"{first} {parts[0]}"
     return parts[0] if parts else ""
 
