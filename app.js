@@ -1,6 +1,6 @@
 "use strict";
 /* My Shelves — a catalogue of the physical books you own.
-   Books live in localStorage on this device; details come from Open Library, Google Books and the National Library of Norway. */
+   Books live in localStorage on this device; details come from Open Library, Google Books and the national libraries of Norway and Portugal. */
 
 const STATUS = { unread: "To read", reading: "Reading", read: "Read" };
 const STORE_KEY = "myshelves.books.v1";
@@ -123,14 +123,31 @@ function nbSearch(q, signal) {
     .then((j) => ((j && j._embedded && j._embedded.items) || []).map(nbItem).filter((b) => b.title));
 }
 
+/* Portuguese National Bibliography (National Library of Portugal, CC0), pre-built into pt-isbn/*.json
+   by tools/build_pt_index.py. Only Portuguese ISBNs (978-972, 978-989) are in it. */
+const isPortugueseIsbn = (isbn) => /^978(972|989)/.test(isbn);
+const ptShards = new Map();
+function ptIsbn(isbn, signal) {
+  if (!isPortugueseIsbn(isbn)) return Promise.resolve(null);
+  const key = isbn.slice(9, 12);
+  if (!ptShards.has(key)) ptShards.set(key, fetchJson(`pt-isbn/${key}.json`, signal).catch((e) => { ptShards.delete(key); throw e; }));
+  return ptShards.get(key).then((shard) => {
+    const e = shard && shard[isbn]; if (!e || !e[0]) return null;
+    const [title, author = "", yr = "", publisher = "", pages = ""] = e;
+    return { title, author, year: yr, pages: pages || "", genre: "", publisher, cover: "", isbn, source: "National Library of Portugal" };
+  });
+}
+
 /** Look up one ISBN in every database and merge what they know. Null when none has it. */
 async function lookupIsbn(isbn, signal) {
-  const names = ["ol", "nb", "gb"];
-  const res = await Promise.allSettled([olIsbn(isbn, signal), nbIsbn(isbn, signal), gbSearch("isbn:" + isbn, signal, 1).then((r) => r[0] || null)]);
+  const names = ["ol", "nb", "gb", "pt"];
+  const res = await Promise.allSettled([olIsbn(isbn, signal), nbIsbn(isbn, signal), gbSearch("isbn:" + isbn, signal, 1).then((r) => r[0] || null), ptIsbn(isbn, signal)]);
   if (signal?.aborted) throw new DOMException("aborted", "AbortError");
   const got = Object.fromEntries(names.map((n, i) => [n, res[i].status === "fulfilled" ? res[i].value : null]));
-  // Norwegian ISBNs (978-82) are best described by the National Library; others by Open Library.
-  const order = isbn.startsWith("97882") ? ["nb", "ol", "gb"] : ["ol", "gb", "nb"];
+  // National ISBNs are best described by their own national library: Norway 978-82, Portugal 978-972 / 978-989.
+  const order = isbn.startsWith("97882") ? ["nb", "ol", "gb", "pt"]
+    : isPortugueseIsbn(isbn) ? ["pt", "ol", "gb", "nb"]
+    : ["ol", "gb", "nb", "pt"];
   const found = order.map((n) => got[n]).filter(Boolean);
   if (!found.length) { if (res.every((r) => r.status === "rejected")) throw new Error("offline"); return null; }
   const base = { ...found[0] };
