@@ -22,7 +22,7 @@ To refresh it with books added since the last run:
 python tools/build_pt_index.py all
 ```
 
-The first run downloads everything (1–2 hours); later runs only fetch new and changed records. Downloaded data is kept in `.cache/pt/`, which isn't committed.
+The first run downloads about 700,000 records (6–7 hours, and it can be stopped and re-run to continue); later runs only fetch new and changed records. Downloaded data is kept in `.cache/pt/`, which isn't committed.
 
 ## Google Books key (optional)
 
