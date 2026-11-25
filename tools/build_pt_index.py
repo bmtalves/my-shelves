@@ -1,20 +1,28 @@
 """Build the Portuguese ISBN index for My Shelves.
 
-Downloads the Portuguese National Bibliography from the National Library of Portugal's open-data
-feed (OAI-PMH, CC0 licence) and writes small JSON files that the app looks ISBNs up in:
+Uses two open-data sources from the National Library of Portugal (both CC0) and writes small JSON
+files that the app looks ISBNs up in:
 
     pt-isbn/<3 digits>.json   ->  {"9789722544733": ["Title", "Author", "2023", "Publisher", 32], ...}
 
 The 3 digits are positions 10-12 of the ISBN-13, which spreads books evenly over 1000 files.
 
-Usage (from the my-shelves folder):
-    python tools/build_pt_index.py harvest     # download (resumable; re-run to continue or to fetch new records)
-    python tools/build_pt_index.py build       # write pt-isbn/*.json from what was downloaded
-    python tools/build_pt_index.py all         # both
+Sources:
+  - The library's whole catalogue as one file (catalogo.csv.zip, about 150 MB, updated monthly).
+    This holds nearly everything, old books included.
+  - The Portuguese National Bibliography feed (OAI-PMH) for books since 2002, fetched month by month.
+    This adds records newer than the catalogue file.
 
-Downloaded records are kept in .cache/pt/ (not committed). A later "harvest" only asks for records
-added or changed since the previous complete run.
+Usage (from the my-shelves folder):
+    python tools/build_pt_index.py all         # download both, then build (use this to refresh)
+    python tools/build_pt_index.py download    # the catalogue file only
+    python tools/build_pt_index.py harvest     # the feed only (resumable; later runs fetch only changes)
+    python tools/build_pt_index.py build       # write pt-isbn/*.json from what was downloaded
+
+Downloads are kept in .cache/ (not committed).
 """
+import csv
+import io
 import json
 import os
 import re
@@ -23,12 +31,16 @@ import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+import zipfile
 from datetime import datetime, timezone
 
 BASE = "https://oai.bnportugal.gov.pt/servlet/OAIHandler"
-SETS = ["bibliografianacional", "bibliografianacional2001"]  # since 2002, and 1935-2001
+SETS = ["bibliografianacional"]  # books since 2002. Older books come from the catalogue file: the feed
+# serves them as one 344,000-record list that restarts from zero whenever a page fails.
+CATALOGUE_URL = "https://opendata.bnportugal.gov.pt/docs/catalogo.csv.zip"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE = os.path.join(ROOT, ".cache", "pt")
+CATALOGUE = os.path.join(ROOT, ".cache", "bulk", "catalogo.csv.zip")
 OUT = os.path.join(ROOT, "pt-isbn")
 PAUSE = 1.0  # seconds between requests, to be gentle on the library's server
 UA = "MyShelvesIndexBuilder/1.0 (+https://bmtalves.github.io/my-shelves/)"
@@ -70,6 +82,11 @@ def clean(s):
     # \x98 / \x9c mark the non-sorting start of a title ("\x98As \x9ccasas" -> "As casas").
     s = (s or "").replace("\x98", "").replace("\x9c", "")
     return re.sub(r"\s+", " ", s).strip(" /:;,.")
+
+
+def publisher_name(s):
+    s = clean(re.sub(r"[\[\]]", "", s or ""))
+    return "" if s.lower() in ("s.n", "s.n.", "sn") else s
 
 
 def person(name):
@@ -114,13 +131,68 @@ def parse_record(rec):
         return []
     creators = get("creator")
     author = person(creators[0]) if creators else ""
-    publisher = clean((get("publisher") or [""])[0])
+    publisher = publisher_name((get("publisher") or [""])[0])
     year = next((m.group(0) for d in get("date") for m in [re.search(r"\d{4}", d)] if m), "")
     pg = next((p for f in get("format") for p in [pages(f)] if p), None)
-    entry = [title, author, year, publisher, pg]
+    return [(i, make_entry(title, author, year, publisher, pg)) for i in isbns]
+
+
+def make_entry(*fields):
+    entry = list(fields)
     while entry and entry[-1] in ("", None):  # trim empty trailing fields to save space
         entry.pop()
-    return [(i, entry) for i in isbns]
+    return entry
+
+
+# ---------- Catalogue file ----------
+def download_catalogue():
+    os.makedirs(os.path.dirname(CATALOGUE), exist_ok=True)
+    part = CATALOGUE + ".part"
+    print("Downloading the library's catalogue file (about 150 MB)...", flush=True)
+    for attempt in range(5):
+        try:
+            req = urllib.request.Request(CATALOGUE_URL, headers={"User-Agent": UA})
+            with urllib.request.urlopen(req, timeout=600) as r, open(part, "wb") as f:
+                while chunk := r.read(1 << 20):
+                    f.write(chunk)
+            zipfile.ZipFile(part).testzip()  # make sure the download is complete
+            os.replace(part, CATALOGUE)
+            print(f"Saved {os.path.getsize(CATALOGUE) / 1e6:.0f} MB to {CATALOGUE}", flush=True)
+            return
+        except Exception as e:
+            wait = 30 * (attempt + 1)
+            print(f"  download failed ({e}); retrying in {wait}s", flush=True)
+            time.sleep(wait)
+    raise SystemExit("Couldn't download the catalogue file. Try again later.")
+
+
+def catalogue_entries():
+    """Portuguese ISBNs from catalogo.csv -> {isbn13: entry}."""
+    csv.field_size_limit(2**31 - 1)  # a few records list hundreds of contributors
+    z = zipfile.ZipFile(CATALOGUE)
+    name = next(n for n in z.namelist() if n.endswith("/catalogo.csv") or n == "catalogo.csv")
+    # The file is UTF-8 apart from about a hundred stray bytes, which become �.
+    text = z.open(name).read().decode("utf8", errors="replace")
+    out = {}
+    for row in csv.DictReader(io.StringIO(text, newline="")):
+        raw = row.get("ISBN") or ""
+        if not raw:
+            continue
+        found = (to_isbn13(t) for t in re.findall(r"(?:97[89][\s-]?)?\d[\d\s-]{7,15}[\dXx]", raw))
+        isbn = next((i for i in found if i), None)
+        if not isbn or not isbn.startswith(("978972", "978989")):
+            continue
+        title = clean(row.get("Title"))
+        if not title:
+            continue
+        sub = clean(row.get("Subtitle"))
+        if sub:
+            title = f"{title}: {sub}"
+        authors = (row.get("Authors") or "").split(" ; ")
+        year = (re.search(r"\d{4}", row.get("Date of Publication") or "") or [""])[0]
+        out[isbn] = make_entry(title, person(authors[0]) if authors[0] else "", year,
+                               publisher_name(row.get("Name of Publisher")), pages(row.get("Extent of Item")))
+    return out
 
 
 # ---------- Harvest ----------
@@ -222,7 +294,10 @@ def harvest_set(set_name):
 # ---------- Build ----------
 def build():
     index = {}
-    for s in reversed(SETS):  # older set first, so newer records win on duplicates
+    if os.path.exists(CATALOGUE):
+        index.update(catalogue_entries())
+        print(f"Catalogue file: {len(index):,} Portuguese ISBNs", flush=True)
+    for s in SETS:  # the feed is newer than the catalogue file, so it wins on duplicates
         p = os.path.join(CACHE, f"{s}.jsonl")
         if not os.path.exists(p):
             continue
@@ -232,12 +307,9 @@ def build():
                     isbn, entry = json.loads(line)
                 except ValueError:  # a line cut off by an interrupted download
                     continue
-                old = index.get(isbn)
-                # Later lines are newer versions; keep them unless they lost information.
-                if old is None or len(entry) >= len(old):
-                    index[isbn] = entry
+                index[isbn] = entry  # later lines are newer versions
     if not index:
-        raise SystemExit("Nothing downloaded yet. Run: python tools/build_pt_index.py harvest")
+        raise SystemExit("Nothing downloaded yet. Run: python tools/build_pt_index.py all")
     shards = {}
     for isbn, entry in index.items():
         shards.setdefault(isbn[9:12], {})[isbn] = entry
@@ -250,7 +322,7 @@ def build():
             json.dump(dict(sorted(data.items())), f, ensure_ascii=False, separators=(",", ":"))
     with open(os.path.join(OUT, "about.json"), "w", encoding="utf8") as f:
         json.dump({
-            "source": "Bibliografia Nacional Portuguesa, Biblioteca Nacional de Portugal (CC0 1.0)",
+            "source": "Biblioteca Nacional de Portugal: catalogue and Bibliografia Nacional Portuguesa (CC0 1.0)",
             "url": "https://opendata.bnportugal.gov.pt/",
             "built": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
             "isbns": len(index),
@@ -262,10 +334,12 @@ def build():
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "all"
+    if cmd in ("download", "all"):
+        download_catalogue()
     if cmd in ("harvest", "all"):
         for s in SETS:
             harvest_set(s)
     if cmd in ("build", "all"):
         build()
-    if cmd not in ("harvest", "build", "all"):
+    if cmd not in ("download", "harvest", "build", "all"):
         print(__doc__)

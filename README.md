@@ -14,15 +14,15 @@ Books are stored in the browser (`localStorage`) on each device. Nothing is sent
 
 ## Portuguese ISBN index
 
-Portuguese books (ISBNs starting 978-972 or 978-989) are looked up in `pt-isbn/`, an index built from the [Portuguese National Bibliography](https://opendata.bnportugal.gov.pt/oai-pmh.htm) published by the National Library of Portugal under CC0. The library's own catalogue can't be queried from a website, so the index is downloaded and stored here.
+Portuguese books (ISBNs starting 978-972 or 978-989) are looked up in `pt-isbn/`, an index built from the National Library of Portugal's [open data](https://opendata.bnportugal.gov.pt/) (CC0): its whole catalogue, published as one file each month, plus the [Portuguese National Bibliography feed](https://opendata.bnportugal.gov.pt/oai-pmh.htm) for books added since. The library's own catalogue can't be queried from a website, so the index is downloaded and stored here.
 
-To refresh it with books added since the last run:
+To refresh it:
 
 ```
 python tools/build_pt_index.py all
 ```
 
-The first run downloads about 700,000 records (6–7 hours, and it can be stopped and re-run to continue); later runs only fetch new and changed records. Downloaded data is kept in `.cache/pt/`, which isn't committed.
+This downloads the catalogue file (about 150 MB, a minute or two), fetches feed records changed since the last run, and rebuilds `pt-isbn/`. The first run's feed download takes about 3 hours; it can be stopped and re-run to continue. Downloads are kept in `.cache/`, which isn't committed.
 
 ## Google Books key (optional)
 
