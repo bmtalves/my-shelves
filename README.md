@@ -3,7 +3,7 @@
 A catalogue of the physical books you own. Books are shown as spines on the shelves where they live, or as a list with covers.
 
 - **Scan a barcode** with the phone camera (or from a photo) to add a book by its ISBN.
-- **Find books online** by title, author or ISBN in [Open Library](https://openlibrary.org) and [Google Books](https://books.google.com).
+- **Find books online** by title, author or ISBN in [Open Library](https://openlibrary.org), [Google Books](https://books.google.com) and the [National Library of Norway](https://www.nb.no).
 - Track reading status, rating, notes and who you lent a book to.
 - **Export** a backup (`.json`) or a spreadsheet (`.csv`), and **import** a backup on another device.
 - Installable on a phone ("Add to Home Screen") and works offline, apart from online search.

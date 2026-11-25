@@ -14,7 +14,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="styles.css?v=6">
+<link rel="stylesheet" href="styles.css?v=7">
 </head>
 <body>
 <div class="wrap">
@@ -67,10 +67,10 @@
     <div class="autosave" id="autosave" hidden></div>
     <details class="settings">
       <summary>Google Books key (optional)</summary>
-      <p>Searches use Open Library and Google Books. Google's free shared allowance often runs out, so add your own free key to get its results every time: <a href="https://developers.google.com/books/docs/v1/using#APIKey" target="_blank" rel="noopener">how to get a key</a>.</p>
+      <p>Searches use Open Library, Google Books and the National Library of Norway. Google's free shared allowance often runs out, so add your own free key to get its results every time: <a href="https://developers.google.com/books/docs/v1/using#APIKey" target="_blank" rel="noopener">how to get a key</a>.</p>
       <div class="key-row"><input id="gbKey" type="text" autocomplete="off" spellcheck="false" placeholder="Paste your API key" aria-label="Google Books API key"><button class="btn small" id="gbKeySave" type="button">Save key</button></div>
     </details>
-    <p class="credit">Book details from <a href="https://openlibrary.org" target="_blank" rel="noopener">Open Library</a> and <a href="https://books.google.com" target="_blank" rel="noopener">Google Books</a>.</p>
+    <p class="credit">Book details from <a href="https://openlibrary.org" target="_blank" rel="noopener">Open Library</a> , <a href="https://books.google.com" target="_blank" rel="noopener">Google Books</a> and the <a href="https://www.nb.no" target="_blank" rel="noopener">National Library of Norway</a>.</p>
   </footer>
 </div>
 <div id="modalRoot"></div>
@@ -78,6 +78,6 @@
 <input type="file" id="photoInput" accept="image/*" capture="environment" hidden>
 
 <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
-<script src="app.js?v=6"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>

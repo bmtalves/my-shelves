@@ -1,6 +1,6 @@
 "use strict";
 /* My Shelves — a catalogue of the physical books you own.
-   Books live in localStorage on this device; details come from Open Library and Google Books. */
+   Books live in localStorage on this device; details come from Open Library, Google Books and the National Library of Norway. */
 
 const STATUS = { unread: "To read", reading: "Reading", read: "Read" };
 const STORE_KEY = "myshelves.books.v1";
@@ -95,31 +95,62 @@ function olSearch(q, signal) {
     isbn: ((d.isbn || []).map(normIsbn).find(Boolean)) || "", source: "Open Library",
   })).filter((b) => b.title));
 }
-/** Look up one ISBN in both databases and merge what they know. Null when neither has it. */
+/* National Library of Norway (Nasjonalbiblioteket): legal-deposit catalogue of nearly every book published in Norway. */
+function nbName(n) { const [last, first] = String(n || "").split(/,\s*/); return first ? `${first} ${last}` : String(n || "").trim(); }
+function nbTitle(m) {
+  const alt = (m.titleInfos || []).find((t) => t.type === "alternative" && t.title);
+  const t = String(m.title || (alt && alt.title) || "").replace(/^\[|\]$/g, "");
+  return t.split(" : ")[0].replace(/\s*[\/:;]\s*$/, "").trim();
+}
+function nbItem(it) {
+  const m = (it && it.metadata) || {}; const l = (it && it._links) || {}; const oi = m.originInfo || {}; const ids = m.identifiers || {};
+  const isbn = [...(ids.isbn13 || []), ...(ids.isbn10 || []), ...(ids.isbns || [])].map(normIsbn).find(Boolean) || "";
+  const s = m.subject || {};
+  return {
+    title: nbTitle(m), author: nbName((m.creators || [])[0]), year: year(oi.issued), pages: m.pageCount > 0 ? m.pageCount : "",
+    genre: tidyGenre([...(s.genres || []), ...(s.topics || [])]), publisher: oi.publisher || "",
+    cover: safeUrl(l.thumbnail_large && l.thumbnail_large.href), isbn, source: "National Library of Norway",
+  };
+}
+function nbIsbn(isbn, signal) {
+  return fetchJson(`https://api.nb.no/catalog/v1/items?q=isbn:${isbn}&size=1`, signal).then((j) => {
+    const it = j && j._embedded && (j._embedded.items || [])[0]; if (!it) return null;
+    const b = nbItem(it); return b.title ? { ...b, isbn } : null;
+  });
+}
+function nbSearch(q, signal) {
+  return fetchJson(`https://api.nb.no/catalog/v1/items?q=${encodeURIComponent(q)}&filter=${encodeURIComponent("mediatype:bøker")}&size=10`, signal)
+    .then((j) => ((j && j._embedded && j._embedded.items) || []).map(nbItem).filter((b) => b.title));
+}
+
+/** Look up one ISBN in every database and merge what they know. Null when none has it. */
 async function lookupIsbn(isbn, signal) {
-  const [ol, gb] = await Promise.allSettled([olIsbn(isbn, signal), gbSearch("isbn:" + isbn, signal, 1).then((r) => r[0] || null)]);
+  const names = ["ol", "nb", "gb"];
+  const res = await Promise.allSettled([olIsbn(isbn, signal), nbIsbn(isbn, signal), gbSearch("isbn:" + isbn, signal, 1).then((r) => r[0] || null)]);
   if (signal?.aborted) throw new DOMException("aborted", "AbortError");
-  const a = ol.status === "fulfilled" ? ol.value : null, b = gb.status === "fulfilled" ? gb.value : null;
-  if (!a && !b) { if (ol.status === "rejected" && gb.status === "rejected") throw new Error("offline"); return null; }
-  const base = { ...(a || b) };
-  const other = a && b ? b : null;
-  if (other) for (const k of ["author", "year", "pages", "genre", "publisher", "cover"]) if (!base[k] && other[k]) base[k] = other[k];
-  if (a && b) base.source = "Open Library + Google Books";
+  const got = Object.fromEntries(names.map((n, i) => [n, res[i].status === "fulfilled" ? res[i].value : null]));
+  // Norwegian ISBNs (978-82) are best described by the National Library; others by Open Library.
+  const order = isbn.startsWith("97882") ? ["nb", "ol", "gb"] : ["ol", "gb", "nb"];
+  const found = order.map((n) => got[n]).filter(Boolean);
+  if (!found.length) { if (res.every((r) => r.status === "rejected")) throw new Error("offline"); return null; }
+  const base = { ...found[0] };
+  for (const other of found.slice(1)) for (const k of ["author", "year", "pages", "genre", "publisher", "cover"]) if (!base[k] && other[k]) base[k] = other[k];
+  base.source = found.map((b) => b.source).join(" + ");
   base.isbn = isbn;
   return base;
 }
-/** Free-text search (title, author, or ISBN) across both databases. */
+/** Free-text search (title, author, or ISBN) across every database. */
 async function searchOnline(q, signal) {
   const isbn = normIsbn(q);
   if (isbn) { const r = await lookupIsbn(isbn, signal); return r ? [r] : []; }
-  const [gb, ol] = await Promise.allSettled([gbSearch(q, signal), olSearch(q, signal)]);
+  const res = await Promise.allSettled([gbSearch(q, signal), nbSearch(q, signal), olSearch(q, signal)]);
   if (signal?.aborted) throw new DOMException("aborted", "AbortError");
-  if (gb.status === "rejected" && ol.status === "rejected") throw new Error("offline");
+  if (res.every((r) => r.status === "rejected")) throw new Error("offline");
   const out = [], seen = new Set();
   const key = (b) => b.isbn || (b.title + "|" + b.author).toLowerCase();
-  const lists = [gb.status === "fulfilled" ? gb.value : [], ol.status === "fulfilled" ? ol.value : []];
+  const lists = res.map((r) => (r.status === "fulfilled" ? r.value : []));
   for (let i = 0; i < 10; i++) for (const l of lists) { const b = l[i]; if (b && !seen.has(key(b))) { seen.add(key(b)); out.push(b); } }
-  return out.slice(0, 14);
+  return out.slice(0, 18);
 }
 
 /* ---------- Rendering ---------- */
@@ -287,7 +318,7 @@ function showForm(id, opts = {}) {
     <h2>${id ? "Edit book" : opts.isbn ? "Scanned " + esc(prettyIsbn(opts.isbn)) : "Add a book"}</h2>
     ${id ? "" : `<div class="online">
       <span class="lbl">Find it online</span>
-      <div class="bar"><input id="onQ" type="search" placeholder="Title, author or ISBN" autocomplete="off" aria-label="Search Open Library and Google Books"><button type="button" class="btn" id="onGo">Search</button></div>
+      <div class="bar"><input id="onQ" type="search" placeholder="Title, author or ISBN" autocomplete="off" aria-label="Search book databases online"><button type="button" class="btn" id="onGo">Search</button></div>
       <div class="status" id="onStatus" hidden></div>
       <div class="results" id="onResults"></div>
     </div>`}
@@ -322,11 +353,11 @@ function showForm(id, opts = {}) {
     q = String(q || "").trim(); if (!q) return;
     lookupCtl.c?.abort(); const c = new AbortController(); lookupCtl.c = c;
     const res = $("#onResults"); res.innerHTML = "";
-    setStatus("", "Searching Open Library and Google Books…");
+    setStatus("", "Searching Open Library, Google Books and the National Library of Norway…");
     try {
       const found = await searchOnline(q, c.signal);
       if (c.signal.aborted || !$("#bookForm")) return;
-      if (!found.length) { setStatus("bad", normIsbn(q) ? "This ISBN isn't in Open Library or Google Books. Search by title instead, or type the details below." : "No books found. Try fewer words, or just the author's surname and a title word."); return; }
+      if (!found.length) { setStatus("bad", normIsbn(q) ? "This ISBN isn't in Open Library, Google Books or the National Library of Norway. Search by title instead, or type the details below." : "No books found. Try fewer words, or just the author's surname and a title word."); return; }
       if (found.length === 1 && normIsbn(q)) { fillForm(found[0], true); setStatus("ok", `Found in ${found[0].source}. Check the details, pick a shelf, and save.`); return; }
       setStatus("", `${found.length} results. Pick the edition you own.`);
       res._found = found;
