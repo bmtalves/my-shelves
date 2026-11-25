@@ -1,0 +1,13 @@
+{
+  "source": "Bibliografia Nacional Portuguesa, Biblioteca Nacional de Portugal (CC0 1.0)",
+  "url": "https://opendata.bnportugal.gov.pt/",
+  "built": "2026-11-25",
+  "isbns": 246018,
+  "fields": [
+    "title",
+    "author",
+    "year",
+    "publisher",
+    "pages"
+  ]
+}
