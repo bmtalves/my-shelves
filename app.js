@@ -1,6 +1,6 @@
 "use strict";
 /* My Shelves — a catalogue of the physical books you own.
-   Books live in localStorage on this device; details come from Open Library, Google Books and the national libraries of Norway, Spain and Portugal, and Brazil's ISBN agency. */
+   Books live in localStorage on this device; details come from Open Library, Google Books and the national libraries of Norway, Spain, France and Portugal, and Brazil's ISBN agency. */
 
 const STATUS = { unread: "To read", reading: "Reading", read: "Read" };
 const STORE_KEY = "myshelves.books.v1";
@@ -184,6 +184,64 @@ function esSearch(q, signal) {
   return bneQuery(`alma.all_for_ui all "${words}" sortBy alma.main_pub_date/sort.descending`, 10, signal);
 }
 
+/* National Library of France (BnF): its catalogue's SRU service, in UNIMARC. French-language ISBNs are
+   978-2 (France, Belgium, Switzerland, Quebec) and 979-10 (France). */
+const isFrenchIsbn = (isbn) => /^(9782|97910)/.test(isbn);
+const BNF_SRU = "https://catalogue.bnf.fr/api/SRU?version=1.2&operation=searchRetrieve&recordSchema=unimarcxchange";
+function isbn13to10(d) {
+  if (!d.startsWith("978")) return "";
+  const b = d.slice(3, 12); let s = 0; for (let i = 0; i < 9; i++) s += Number(b[i]) * (10 - i);
+  const c = (11 - (s % 11)) % 11; return b + (c === 10 ? "X" : String(c));
+}
+function unimarcItem(rec) {
+  const fields = (tag) => [...rec.children].filter((f) => f.localName === "datafield" && f.getAttribute("tag") === tag);
+  const sub = (tags, code) => { for (const tag of tags) for (const f of fields(tag)) for (const s of f.children) if (s.getAttribute("code") === code && s.textContent.trim()) return s.textContent.trim(); return ""; };
+  const tidy = (s) => s.replace(/[\[\]]/g, "").replace(/' (?=\S)/g, "'").replace(/\s*[\/:;,.=]+\s*$/, "").trim();
+  const last = sub(["700", "701"], "a"), first = sub(["700", "701"], "b");
+  const extent = sub(["215"], "a"); // "1 volume 172 p", "1 vol. (157 p.)", "CXXXVIII-609 p."
+  const pages = ((extent.match(/\d+(?=\]?\s*p(?:ages?)?\b)/g) || []).pop()) || "";
+  const f100 = sub(["100"], "a");
+  return {
+    title: tidy(sub(["200"], "a")), author: last ? tidy(first ? `${first} ${last}` : last) : tidy(sub(["200"], "f")),
+    year: year(sub(["214", "210"], "d")) || (/^\d{4}$/.test(f100.slice(9, 13)) ? f100.slice(9, 13) : ""),
+    pages: Number(pages) > 0 ? Number(pages) : "", genre: tidyGenre([sub(["608"], "a"), sub(["606"], "a")].filter(Boolean)),
+    publisher: tidy(sub(["214", "210"], "c")), cover: "",
+    isbn: fields("010").map((f) => normIsbn(([...f.children].find((s) => s.getAttribute("code") === "a") || {}).textContent || "")).find(Boolean) || "",
+    source: "National Library of France",
+  };
+}
+function bnfQuery(cql, max, signal) {
+  return fetchText(`${BNF_SRU}&maximumRecords=${max}&query=${encodeURIComponent(cql)}`, signal, 12000).then((xml) => {
+    const d = new DOMParser().parseFromString(xml, "text/xml");
+    // The MARC records are the <record> elements that hold fields directly (not the SRU wrapper's).
+    return [...d.getElementsByTagNameNS("*", "record")].filter((r) => [...r.children].some((c) => c.localName === "datafield")).map(unimarcItem).filter((b) => b.title);
+  });
+}
+function frIsbn(isbn, signal) {
+  if (!isFrenchIsbn(isbn)) return Promise.resolve(null);
+  // Older records are indexed under the 10-digit ISBN only.
+  const i10 = isbn13to10(isbn);
+  return bnfQuery(`bib.isbn all "${isbn}"${i10 ? ` or bib.isbn all "${i10}"` : ""}`, 3, signal).then((list) => {
+    const exact = list.filter((b) => b.isbn === isbn); const pool = exact.length ? exact : list;
+    const score = (b) => ["author", "year", "pages", "publisher"].filter((k) => b[k]).length;
+    const b = pool.sort((a, c) => score(c) - score(a))[0];
+    return b ? { ...b, isbn } : null;
+  });
+}
+function frSearch(q, signal) {
+  // The catalogue neither ranks by relevance nor sorts, and lists studies of a book before the book.
+  // Fetch a few dozen and rank here: titles made of the query's words first, then the author's surname.
+  const plain = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+  const words = new Set(plain(q).split(" ").filter(Boolean));
+  const score = (b) => {
+    const t = plain(b.title).split(" ").filter(Boolean);
+    const surname = plain(b.author).split(" ").pop();
+    return 2 * t.filter((w) => words.has(w)).length / Math.max(1, t.length) + (surname && words.has(surname) ? 1 : 0) + (b.isbn ? 0.3 : 0);
+  };
+  const cql = `bib.anywhere all "${q.replace(/["\\]/g, " ").trim()}" and bib.doctype any "a"`;
+  return bnfQuery(cql, 30, signal).then((list) => list.map((b) => [score(b), b]).sort((a, c) => c[0] - a[0]).slice(0, 10).map((x) => x[1]));
+}
+
 /* Brazilian books (978-85, 978-65) via BrasilAPI, which serves the records of the CBL (Câmara Brasileira
    do Livro), Brazil's ISBN agency. Its author list often includes translators, so only the first is kept. */
 const isBrazilianIsbn = (isbn) => /^978(85|65)/.test(isbn);
@@ -201,14 +259,15 @@ function brIsbn(isbn, signal) {
 
 /** Look up one ISBN in every database and merge what they know. Null when none has it. */
 async function lookupIsbn(isbn, signal) {
-  const names = ["ol", "nb", "gb", "pt", "br", "es"];
-  const res = await Promise.allSettled([olIsbn(isbn, signal), nbIsbn(isbn, signal), gbSearch("isbn:" + isbn, signal, 1).then((r) => r[0] || null), ptIsbn(isbn, signal), brIsbn(isbn, signal), esIsbn(isbn, signal)]);
+  const names = ["ol", "nb", "gb", "pt", "br", "es", "fr"];
+  const res = await Promise.allSettled([olIsbn(isbn, signal), nbIsbn(isbn, signal), gbSearch("isbn:" + isbn, signal, 1).then((r) => r[0] || null), ptIsbn(isbn, signal), brIsbn(isbn, signal), esIsbn(isbn, signal), frIsbn(isbn, signal)]);
   if (signal?.aborted) throw new DOMException("aborted", "AbortError");
   const got = Object.fromEntries(names.map((n, i) => [n, res[i].status === "fulfilled" ? res[i].value : null]));
   // National ISBNs are best described by their own country's records: Norway 978-82,
-  // Portugal 978-972 / 978-989, Brazil 978-85 / 978-65, Spain 978-84.
-  const national = isbn.startsWith("97882") ? "nb" : isPortugueseIsbn(isbn) ? "pt" : isBrazilianIsbn(isbn) ? "br" : isSpanishIsbn(isbn) ? "es" : "";
-  const order = [national, ...["ol", "gb", "nb", "pt", "br", "es"].filter((n) => n !== national)].filter(Boolean);
+  // Portugal 978-972 / 978-989, Brazil 978-85 / 978-65, Spain 978-84,
+  // France 978-2 / 979-10.
+  const national = isbn.startsWith("97882") ? "nb" : isPortugueseIsbn(isbn) ? "pt" : isBrazilianIsbn(isbn) ? "br" : isSpanishIsbn(isbn) ? "es" : isFrenchIsbn(isbn) ? "fr" : "";
+  const order = [national, ...["ol", "gb", "nb", "pt", "br", "es", "fr"].filter((n) => n !== national)].filter(Boolean);
   const found = order.map((n) => got[n]).filter(Boolean);
   if (!found.length) { if (res.every((r) => r.status === "rejected")) throw new Error("offline"); return null; }
   const base = { ...found[0] };
@@ -221,7 +280,7 @@ async function lookupIsbn(isbn, signal) {
 async function searchOnline(q, signal) {
   const isbn = normIsbn(q);
   if (isbn) { const r = await lookupIsbn(isbn, signal); return r ? [r] : []; }
-  const res = await Promise.allSettled([gbSearch(q, signal), nbSearch(q, signal), olSearch(q, signal), esSearch(q, signal)]);
+  const res = await Promise.allSettled([gbSearch(q, signal), nbSearch(q, signal), olSearch(q, signal), esSearch(q, signal), frSearch(q, signal)]);
   if (signal?.aborted) throw new DOMException("aborted", "AbortError");
   if (res.every((r) => r.status === "rejected")) throw new Error("offline");
   const out = [], seen = new Set();
@@ -431,7 +490,7 @@ function showForm(id, opts = {}) {
     q = String(q || "").trim(); if (!q) return;
     lookupCtl.c?.abort(); const c = new AbortController(); lookupCtl.c = c;
     const res = $("#onResults"); res.innerHTML = "";
-    setStatus("", normIsbn(q) ? "Looking up this ISBN…" : "Searching Open Library, Google Books and the national libraries of Norway and Spain…");
+    setStatus("", normIsbn(q) ? "Looking up this ISBN…" : "Searching Open Library, Google Books and the national libraries of Norway, Spain and France…");
     try {
       const found = await searchOnline(q, c.signal);
       if (c.signal.aborted || !$("#bookForm")) return;
