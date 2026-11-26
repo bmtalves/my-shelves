@@ -1,6 +1,6 @@
 "use strict";
 /* My Shelves — a catalogue of the physical books you own.
-   Books live in localStorage on this device; details come from Open Library, Google Books and the national libraries of Norway and Portugal. */
+   Books live in localStorage on this device; details come from Open Library, Google Books and the national libraries of Norway and Portugal, and Brazil's ISBN agency. */
 
 const STATUS = { unread: "To read", reading: "Reading", read: "Read" };
 const STORE_KEY = "myshelves.books.v1";
@@ -138,16 +138,33 @@ function ptIsbn(isbn, signal) {
   });
 }
 
+/* Brazilian books (978-85, 978-65) via BrasilAPI, which serves the records of the CBL (Câmara Brasileira
+   do Livro), Brazil's ISBN agency. Its author list often includes translators, so only the first is kept. */
+const isBrazilianIsbn = (isbn) => /^978(85|65)/.test(isbn);
+function brIsbn(isbn, signal) {
+  if (!isBrazilianIsbn(isbn)) return Promise.resolve(null);
+  return fetchJson(`https://brasilapi.com.br/api/isbn/v1/${isbn}`, signal).then((d) => {
+    if (!d || !d.title) return null;
+    return {
+      title: String(d.title).trim(), author: String((d.authors || [])[0] || "").trim(), year: d.year ? String(d.year) : "",
+      pages: d.page_count > 0 ? d.page_count : "", genre: tidyGenre(d.subjects), publisher: String(d.publisher || "").trim(),
+      cover: safeUrl(d.cover_url), isbn, source: "Brazilian ISBN Agency (CBL)",
+    };
+  }).catch((e) => { if (/HTTP 404/.test(e.message)) return null; throw e; });
+}
+
 /** Look up one ISBN in every database and merge what they know. Null when none has it. */
 async function lookupIsbn(isbn, signal) {
-  const names = ["ol", "nb", "gb", "pt"];
-  const res = await Promise.allSettled([olIsbn(isbn, signal), nbIsbn(isbn, signal), gbSearch("isbn:" + isbn, signal, 1).then((r) => r[0] || null), ptIsbn(isbn, signal)]);
+  const names = ["ol", "nb", "gb", "pt", "br"];
+  const res = await Promise.allSettled([olIsbn(isbn, signal), nbIsbn(isbn, signal), gbSearch("isbn:" + isbn, signal, 1).then((r) => r[0] || null), ptIsbn(isbn, signal), brIsbn(isbn, signal)]);
   if (signal?.aborted) throw new DOMException("aborted", "AbortError");
   const got = Object.fromEntries(names.map((n, i) => [n, res[i].status === "fulfilled" ? res[i].value : null]));
-  // National ISBNs are best described by their own national library: Norway 978-82, Portugal 978-972 / 978-989.
-  const order = isbn.startsWith("97882") ? ["nb", "ol", "gb", "pt"]
-    : isPortugueseIsbn(isbn) ? ["pt", "ol", "gb", "nb"]
-    : ["ol", "gb", "nb", "pt"];
+  // National ISBNs are best described by their own country's records: Norway 978-82,
+  // Portugal 978-972 / 978-989, Brazil 978-85 / 978-65.
+  const order = isbn.startsWith("97882") ? ["nb", "ol", "gb", "pt", "br"]
+    : isPortugueseIsbn(isbn) ? ["pt", "ol", "gb", "nb", "br"]
+    : isBrazilianIsbn(isbn) ? ["br", "ol", "gb", "nb", "pt"]
+    : ["ol", "gb", "nb", "pt", "br"];
   const found = order.map((n) => got[n]).filter(Boolean);
   if (!found.length) { if (res.every((r) => r.status === "rejected")) throw new Error("offline"); return null; }
   const base = { ...found[0] };
@@ -370,11 +387,11 @@ function showForm(id, opts = {}) {
     q = String(q || "").trim(); if (!q) return;
     lookupCtl.c?.abort(); const c = new AbortController(); lookupCtl.c = c;
     const res = $("#onResults"); res.innerHTML = "";
-    setStatus("", "Searching Open Library, Google Books and the National Library of Norway…");
+    setStatus("", normIsbn(q) ? "Looking up this ISBN…" : "Searching Open Library, Google Books and the National Library of Norway…");
     try {
       const found = await searchOnline(q, c.signal);
       if (c.signal.aborted || !$("#bookForm")) return;
-      if (!found.length) { setStatus("bad", normIsbn(q) ? "This ISBN isn't in Open Library, Google Books or the National Library of Norway. Search by title instead, or type the details below." : "No books found. Try fewer words, or just the author's surname and a title word."); return; }
+      if (!found.length) { setStatus("bad", normIsbn(q) ? "None of the book databases has this ISBN. Search by title instead, or type the details below." : "No books found. Try fewer words, or just the author's surname and a title word."); return; }
       if (found.length === 1 && normIsbn(q)) { fillForm(found[0], true); setStatus("ok", `Found in ${found[0].source}. Check the details, pick a shelf, and save.`); return; }
       setStatus("", `${found.length} results. Pick the edition you own.`);
       res._found = found;
