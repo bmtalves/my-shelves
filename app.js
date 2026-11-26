@@ -1,6 +1,6 @@
 "use strict";
 /* My Shelves — a catalogue of the physical books you own.
-   Books live in localStorage on this device; details come from Open Library, Google Books and the national libraries of Norway and Portugal, and Brazil's ISBN agency. */
+   Books live in localStorage on this device; details come from Open Library, Google Books and the national libraries of Norway, Spain and Portugal, and Brazil's ISBN agency. */
 
 const STATUS = { unread: "To read", reading: "Reading", read: "Read" };
 const STORE_KEY = "myshelves.books.v1";
@@ -56,12 +56,14 @@ function normIsbn(raw) {
 function prettyIsbn(d) { return d && d.length === 13 ? `${d.slice(0, 3)}-${d.slice(3, 12)}-${d.slice(12)}` : d || ""; }
 
 /* ---------- Online book databases ---------- */
-async function fetchJson(url, signal, ms = 9000) {
+async function fetchAs(kind, url, signal, ms = 9000) {
   const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), ms);
   const onAbort = () => ctl.abort(); signal?.addEventListener("abort", onAbort);
-  try { const r = await fetch(url, { signal: ctl.signal }); if (!r.ok) throw new Error("HTTP " + r.status); return await r.json(); }
+  try { const r = await fetch(url, { signal: ctl.signal }); if (!r.ok) throw new Error("HTTP " + r.status); return await (kind === "json" ? r.json() : r.text()); }
   finally { clearTimeout(t); signal?.removeEventListener("abort", onAbort); }
 }
+const fetchJson = (url, signal, ms) => fetchAs("json", url, signal, ms);
+const fetchText = (url, signal, ms) => fetchAs("text", url, signal, ms);
 function year(s) { return (String(s || "").match(/\d{4}/) || [""])[0]; }
 const GENRES = ["Science fiction", "Fantasy", "Mystery", "Crime", "Thriller", "Horror", "Romance", "Historical fiction", "Poetry", "Drama", "Biography", "Autobiography", "Memoir", "History", "Philosophy", "Psychology", "Science", "Mathematics", "Economics", "Politics", "Religion", "Art", "Music", "Travel", "Cooking", "Cookbook", "Self-help", "Business", "Children's fiction", "Juvenile fiction", "Young adult fiction", "Comics", "Graphic novels", "Classics", "Essays", "Fiction", "Nonfiction"];
 function tidyGenre(list) {
@@ -138,6 +140,50 @@ function ptIsbn(isbn, signal) {
   });
 }
 
+/* National Library of Spain (Biblioteca Nacional de España): its catalogue's SRU service, in MARC 21. */
+const isSpanishIsbn = (isbn) => isbn.startsWith("97884");
+const BNE_SRU = "https://catalogo.bne.es/view/sru/34BNE_INST?version=1.2&operation=searchRetrieve&recordSchema=marcxml";
+function marcItem(rec) {
+  const fields = (tag) => [...rec.getElementsByTagNameNS("*", "datafield")].filter((f) => f.getAttribute("tag") === tag);
+  const sub = (tag, code) => { for (const f of fields(tag)) for (const s of f.getElementsByTagNameNS("*", "subfield")) if (s.getAttribute("code") === code && s.textContent.trim()) return s.textContent.trim(); return ""; };
+  const tidy = (s) => s.replace(/[\[\]]/g, "").replace(/\s*[\/:;,.=]+\s*$/, "").trim();
+  const isbn = fields("020").flatMap((f) => [...f.getElementsByTagNameNS("*", "subfield")].filter((s) => s.getAttribute("code") === "a").map((s) => normIsbn(s.textContent.split(/[\s(]/)[0]))).find(Boolean) || "";
+  const f008 = ([...rec.getElementsByTagNameNS("*", "controlfield")].find((f) => f.getAttribute("tag") === "008") || {}).textContent || "";
+  // "CXXXVIII, 609 p." -> 609; "[32] p." -> 32
+  const extent = (sub("300", "a").match(/^(.*?)\s*p\./) || [])[1] || "";
+  const pages = (extent.match(/(?<![\[\d])\d+(?![\]\d])/g) || extent.match(/\d+/g) || []).pop() || "";
+  const subjects = [...fields("655"), ...fields("650")].map((f) => tidy(([...f.getElementsByTagNameNS("*", "subfield")].find((s) => s.getAttribute("code") === "a") || {}).textContent || ""));
+  return {
+    title: tidy(sub("245", "a")), author: nbName(tidy(sub("100", "a") || sub("700", "a"))),
+    year: year(sub("264", "c") || sub("260", "c")) || (/^\d{4}$/.test(f008.slice(7, 11)) ? f008.slice(7, 11) : ""),
+    pages: Number(pages) > 0 ? Number(pages) : "", genre: tidyGenre(subjects),
+    publisher: tidy(sub("264", "b") || sub("260", "b")), cover: "", isbn, source: "National Library of Spain",
+  };
+}
+function bneQuery(cql, max, signal) {
+  return fetchText(`${BNE_SRU}&maximumRecords=${max}&query=${encodeURIComponent(cql)}`, signal).then((xml) => {
+    const d = new DOMParser().parseFromString(xml, "text/xml");
+    // MARC records sit inside the SRU wrapper's own <record> elements; keep only the MARC ones.
+    return [...d.getElementsByTagNameNS("http://www.loc.gov/MARC21/slim", "record")].map(marcItem).filter((b) => b.title);
+  });
+}
+function esIsbn(isbn, signal) {
+  if (!isSpanishIsbn(isbn)) return Promise.resolve(null);
+  return bneQuery(`alma.isbn=${isbn}`, 3, signal).then((list) => {
+    // Prefer the record for this exact ISBN, and among those the one with most details.
+    const exact = list.filter((b) => b.isbn === isbn); const pool = exact.length ? exact : list;
+    const score = (b) => ["author", "year", "pages", "publisher"].filter((k) => b[k]).length;
+    const b = pool.sort((a, c) => score(c) - score(a))[0];
+    return b ? { ...b, isbn } : null;
+  });
+}
+function esSearch(q, signal) {
+  const words = q.replace(/["\\]/g, " ").trim();
+  // The catalogue doesn't rank by relevance, and its default order puts books *about* a title first;
+  // newest first brings up the editions people are likely to own.
+  return bneQuery(`alma.all_for_ui all "${words}" sortBy alma.main_pub_date/sort.descending`, 10, signal);
+}
+
 /* Brazilian books (978-85, 978-65) via BrasilAPI, which serves the records of the CBL (Câmara Brasileira
    do Livro), Brazil's ISBN agency. Its author list often includes translators, so only the first is kept. */
 const isBrazilianIsbn = (isbn) => /^978(85|65)/.test(isbn);
@@ -155,16 +201,14 @@ function brIsbn(isbn, signal) {
 
 /** Look up one ISBN in every database and merge what they know. Null when none has it. */
 async function lookupIsbn(isbn, signal) {
-  const names = ["ol", "nb", "gb", "pt", "br"];
-  const res = await Promise.allSettled([olIsbn(isbn, signal), nbIsbn(isbn, signal), gbSearch("isbn:" + isbn, signal, 1).then((r) => r[0] || null), ptIsbn(isbn, signal), brIsbn(isbn, signal)]);
+  const names = ["ol", "nb", "gb", "pt", "br", "es"];
+  const res = await Promise.allSettled([olIsbn(isbn, signal), nbIsbn(isbn, signal), gbSearch("isbn:" + isbn, signal, 1).then((r) => r[0] || null), ptIsbn(isbn, signal), brIsbn(isbn, signal), esIsbn(isbn, signal)]);
   if (signal?.aborted) throw new DOMException("aborted", "AbortError");
   const got = Object.fromEntries(names.map((n, i) => [n, res[i].status === "fulfilled" ? res[i].value : null]));
   // National ISBNs are best described by their own country's records: Norway 978-82,
-  // Portugal 978-972 / 978-989, Brazil 978-85 / 978-65.
-  const order = isbn.startsWith("97882") ? ["nb", "ol", "gb", "pt", "br"]
-    : isPortugueseIsbn(isbn) ? ["pt", "ol", "gb", "nb", "br"]
-    : isBrazilianIsbn(isbn) ? ["br", "ol", "gb", "nb", "pt"]
-    : ["ol", "gb", "nb", "pt", "br"];
+  // Portugal 978-972 / 978-989, Brazil 978-85 / 978-65, Spain 978-84.
+  const national = isbn.startsWith("97882") ? "nb" : isPortugueseIsbn(isbn) ? "pt" : isBrazilianIsbn(isbn) ? "br" : isSpanishIsbn(isbn) ? "es" : "";
+  const order = [national, ...["ol", "gb", "nb", "pt", "br", "es"].filter((n) => n !== national)].filter(Boolean);
   const found = order.map((n) => got[n]).filter(Boolean);
   if (!found.length) { if (res.every((r) => r.status === "rejected")) throw new Error("offline"); return null; }
   const base = { ...found[0] };
@@ -177,7 +221,7 @@ async function lookupIsbn(isbn, signal) {
 async function searchOnline(q, signal) {
   const isbn = normIsbn(q);
   if (isbn) { const r = await lookupIsbn(isbn, signal); return r ? [r] : []; }
-  const res = await Promise.allSettled([gbSearch(q, signal), nbSearch(q, signal), olSearch(q, signal)]);
+  const res = await Promise.allSettled([gbSearch(q, signal), nbSearch(q, signal), olSearch(q, signal), esSearch(q, signal)]);
   if (signal?.aborted) throw new DOMException("aborted", "AbortError");
   if (res.every((r) => r.status === "rejected")) throw new Error("offline");
   const out = [], seen = new Set();
@@ -387,7 +431,7 @@ function showForm(id, opts = {}) {
     q = String(q || "").trim(); if (!q) return;
     lookupCtl.c?.abort(); const c = new AbortController(); lookupCtl.c = c;
     const res = $("#onResults"); res.innerHTML = "";
-    setStatus("", normIsbn(q) ? "Looking up this ISBN…" : "Searching Open Library, Google Books and the National Library of Norway…");
+    setStatus("", normIsbn(q) ? "Looking up this ISBN…" : "Searching Open Library, Google Books and the national libraries of Norway and Spain…");
     try {
       const found = await searchOnline(q, c.signal);
       if (c.signal.aborted || !$("#bookForm")) return;
